@@ -1,0 +1,116 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Unicorn Pizza - Customer Lookup
+Parameters:
+  TableName:
+    Type: String
+    Default: UnicornPizza-Customers
+Resources:
+  CustomerTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref TableName
+      AttributeDefinitions:
+      - AttributeName: emailAddress
+        AttributeType: S
+      - AttributeName: phoneNumber
+        AttributeType: S
+      KeySchema:
+      - AttributeName: emailAddress
+        KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: phoneNumber
+          KeySchema:
+            - AttributeName: phoneNumber
+              KeyType: HASH
+          Projection:
+            ProjectionType: 'ALL'
+      BillingMode: PAY_PER_REQUEST
+  CustomerLookupLambdaAccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: UnicornPizza-CustomerLookup
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+                Service:
+                    - lambda.amazonaws.com
+      Policies:
+        - PolicyName: CustomerLookupPermissions
+          PolicyDocument:       
+            Version: '2012-10-17'
+            Statement:
+            - Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource:
+                - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/UnicornPizza-CustomerLookup'
+                - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/UnicornPizza-CustomerLookup:*'
+                - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/UnicornPizza-CustomerLookup:*:*'
+            - Effect: Allow
+              Action:
+                - dynamodb:BatchGetItem
+                - dynamodb:GetItem
+                - dynamodb:Query
+                - dynamodb:Scan
+                - dynamodb:BatchWriteItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+              Resource:
+                - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${CustomerTable}'
+                - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${CustomerTable}/*'
+     
+  CustomerLookupFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: UnicornPizza-CustomerLookup
+      Runtime: python3.8
+      MemorySize: 128
+      Timeout: 300
+      Role: !GetAtt CustomerLookupLambdaAccessRole.Arn
+      Handler: index.lambda_handler
+      Environment:
+        Variables: 
+          TABLENAME: !Ref CustomerTable
+      Code:
+       ZipFile: |
+        import json
+        import boto3
+        import os
+        from boto3.dynamodb.conditions import Key
+
+        tablename = os.environ.get('TABLENAME')
+        dynamodb = boto3.resource('dynamodb')
+
+        def lambda_handler(event, context):
+          phonenumber = event ['Details']['ContactData']['CustomerEndpoint']['Address']
+          table = dynamodb.Table(tablename) 
+          response = table.query(
+                IndexName='phoneNumber',
+                KeyConditionExpression=Key('phoneNumber').eq(phonenumber)
+            )
+          
+
+          if response['Count'] > 0:
+              first_name = response['Items'][0]['firstName']
+              last_name = response['Items'][0]['lastName']
+              return {
+                'customer': 'returning',
+                'firstName': first_name,
+                'lastName': last_name
+                
+              }
+          else:
+              return { 
+                'customer': 'unknown'
+              }
+  CustomerLookupLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: 
+      LogGroupName: !Sub '/aws/lambda/${CustomerLookupFunction}'
+      RetentionInDays: 14
